@@ -1,0 +1,232 @@
+---
+title: "Simulation Assignment"
+author: "Grady Weyenberg"
+date: Fall2020
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    css: lab.css
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+options(scipen=10) # increase penalty for scientific notation
+knitr::opts_chunk$set(echo = TRUE, cache=FALSE)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(moderndive)
+set.seed(42)
+theme_update(panel.background = element_rect(fill="#fbfaf7"),
+             panel.grid = element_line(color="#f0eee4"),
+             text = element_text(size=14))
+```
+
+
+
+## Simulation with tidyverse
+
+Statistical simulation is the process of using a random number generator to explore the behavior of a analysis procedure.
+
+There are multiple ways to program this behavior, I focus on using some tidyverse tools
+
+- `purrr::rerun(n, expression)` rerun a fixed expression n times (probably for new random numbers) each result is stored in an item in the returned list
+- `purrr::map(x, func)` run the function using each input in x separately, each result is an item in the returned list
+- `bind_rows(list, .id="run")` combine the lists from the above functions in to a single data frame, adding a new variable, `run` in this example, for identifying which run the result came from
+
+```{r}tibble(x=rnorm(3))
+rerun(2, tibble(x=rnorm(3)))
+rerun(10, tibble(x=rnorm(3))) %>% bind_rows(.id="run")
+```
+
+```{r}
+data(bowl)
+rerun(2, bowl %>% slice_sample(n=10) %>% count(color)) %>% bind_rows
+```
+
+
+### Map
+
+Map is a common _higher-order function_ in many programming languages. A diagram of the basic idea of `map` is shown below.
+
+```{r, echo=FALSE, fig.cap="Source: Wikimedia.org"}
+include_graphics("https://upload.wikimedia.org/wikipedia/commons/0/06/Mapping-steps-loillibe-new.gif")
+```
+
+For our use case we'll use a function that generates a data frame with simulated data sets instead of a simple arithmetic function.
+
+```{r}
+map(2:3, function(n) tibble(n, x=rnorm(n)))
+map(2:5, function(n) tibble(n, x=rnorm(n))) %>% bind_rows(.id="run")
+```
+
+In this case we use the map input values to control the sample size, but they could control other aspects of the simulation instead. Note that the function we are using is
+
+```{r}
+function(n) tibble(n, x=rnorm(n))
+```
+
+We _could_ save this function to a variable
+
+```{r, eval=FALSE}
+simfun <- function(n){
+  tibble(n, x=rnorm(n))
+}
+map(2:5, simfun)
+```
+
+But for simple one-line functions like this one it's easy enough to just use it inline as an _anonymous_ (or _lambda_) function directly inside `map`
+
+
+### A convenient custom pipeline
+
+Typically, we will want to treat each run completely separately for analysis and summary purposes, so lets make a custom function that will bind and group in one step. 
+
+```{r}
+bind_group <- function(data, .id="run"){
+  data %>% bind_rows(.id=.id) %>% group_by(.data[[.id]], .add=TRUE)
+}
+
+(expsim <- rerun(100, tibble(x=rexp(5))) %>% bind_group())
+
+```
+
+Above each run generates 5 Exponential observations, the process is repeated 100 times, and put into a grouped tibble. Now we can use `summary` to compute summary statistics for each run of data generation.
+
+```{r}
+(expsim_summary <- expsim %>% 
+    summarize(mean=mean(x), median=median(x), sd=sd(x)))
+
+ggplot(pivot_longer(expsim_summary, -run, names_to="statistic")) + 
+  geom_density(aes(x=value, color=statistic), adjust=1.5) + 
+  ggtitle("Density estimates for statistics on 100 rexp(3) simulations")
+```
+
+
+### Bead bowl sampling for proportions
+
+```{r}
+bowl_100 <- rerun(200, bowl %>% slice_sample(n=20) %>% count(color)) %>% bind_group
+bowl_100
+bowl_100 <- bowl_100 %>% mutate(prop=proportions(n))
+ggplot(bowl_100 %>% filter(color=="red")) + aes(prop) + geom_histogram(binwidth = 0.05, boundary=0.025)
+```
+
+- for each different sample size $n$ do the following:
+  + create $k$ replicates of the following data set
+    + sample $nn$ balls from `bowl` and comptue the proportion red
+
+```{r}
+bowl_sim <- function(nn, k){
+  samples <- rerun(k, bowl %>% slice_sample(n=nn)) 
+  samples %>% bind_group(.id="sample") %>% count(color) %>% mutate(N=nn, prop=proportions(n))
+}
+bowl_sim(10,5)
+n <- c(5,10,20,50,100,200)
+different_n <- map(n, bowl_sim, k=500) %>% bind_group()
+ggplot(different_n %>% filter(color=="red")) + aes(x=prop) + geom_histogram() + facet_wrap(~N, scales="free")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+n <- c(10, 20, 50, 200) # the sample sizes
+my_func <- function(nn, k){
+  my_list <- rerun(k, bowl %>% slice_sample(n=nn)) %>% bind_group
+  my_list %>% count(color) %>% pivot_wider(names_from="color", values_from = "n", values_fill = 0) %>%  
+    summarize(prop=red/(red+white), n=nn)
+}
+
+my_func(10,3)
+
+my_demo <- map(n, my_func, k=200) %>% bind_group(.id="map") 
+
+ggplot(my_demo) + aes(x=prop) + geom_histogram() + facet_wrap(~n)
+```
+
+
+
+## Activity
+
+1. Modify the `expsim` code above so that the `min` and `max` statistics are also calculated and plotted.
+2. Make a second plot by adding `facet_wrap(~statistic, scales="free")` to the plot above.  This will allow you to focus on the shape of each individual curve.
+3. _Re-summarize_ the data frame of statistics you just plotted, what is the mean of each of the five statistics across the 100 runs?
+4. Write a two-to-three paragraph summary describing the similarities and differences between the behavior of the five statistics.
+    + What range of numbers does each summary statistic cluster around?
+    + Are the density estimates tall and narrow, or fat and wide?
+    + Is the shape of each statistic normal or not-normal?
+5. Repeat the above investigation with a new data generating process.
+    + Change the `rexp(3)` call within the `rerun` line to generate Normally distributed variables instead. (`rnorm`)
+    + Generate the new summary table and plot it
+    + Write a short description of the differences between the statistics.
+6. Describe the similarities and differences between the results of the exponentially disributed data and the normally distributed data.
+  
+## Behavior of sample mean statistic
+
+To explore the behavior of a sample mean we will do several runs of the data generation procedure and calculate the mean of each run group.
+
+```{r}
+(expsim2 <- rerun(100, tibble(x=rexp(50))) %>% bind_group() %>% summarize(n=n(), mean=mean(x)))
+ggplot(expsim2, aes(x=mean)) + geom_density(adjust=1.25)
+```
+
+Lets now repeat this process for a number of different sample sizes using map. First we make a function that will generate 500 runs for a given sample size `n`.
+
+```{r}
+sim_exp <- function(n) rerun(500, tibble(x=rexp(n, rate=0.5))) %>% bind_group
+sim_exp(3)
+```
+
+Now use this function with `map` to generate simulations for different values of `n`
+
+```{r}
+n_values <- c(1,2,5,20,50,200)
+(sim_exp_data <- map(n_values, sim_exp) %>% bind_group("maprun"))
+```
+
+Since our `bind_group` function has already grouped everything by the value of `n` and the `run`, we can simply summarize the tibble to calculate the means within each run. The `.groups="drop"` option refers to the output of the summarize function.
+
+```{r}
+(sim_exp_summary <- sim_exp_data %>% summarize(mean=mean(x), n=n(), .groups="drop"))
+ggplot(sim_exp_summary, aes(x=mean, color=n)) + 
+  geom_density(aes(group=n), adjust=1.25) +
+  scale_color_gradient(trans="log", breaks=n_values, labels=n_values) + 
+  labs(title="Sampling distribution of mean for Exp data", color="Sample size")
+
+ggplot(sim_exp_summary, aes(x=mean)) + geom_density(adjust=1.25) + 
+  facet_wrap(vars(n), scales="free", labeller = "label_both") + 
+  ggtitle("Sampling distribution of mean for Exp data")
+
+sim_exp_summary %>% group_by(n) %>% 
+  summarize(runs=n(), mean_xbar = mean(mean), sd_xbar=sd(mean))
+```
+
+In the above set of simulations we see two important behaviors of the sample means
+
+- As `n` increases, the `mean(x)` becomes increasingly concentrated around the value 2.
+- As `n` increases, the shape of `mean(x)` becomes increasingly Normal.
+
+
+## Activity 2
+
+The two behaviors described above are special. We will make some modifications to the example above explore that idea
+
+7. Create a new `sim_norm` function that generates the observation sample from `rnorm` instead of `rexp`.
+8. Use `map` with your new function to run the simulation at the same `n_values` as the example.
+9. Plot the results as was done above. (This should only require you to change the data set provided to plotting in the above commands.) 
+10. Comment on what you see. 
+    + Does the `mean` still gather around a value? 
+    + Does it drastically change shape as the sample size increases?
+
+
+## Activity 3
+
+11. Use the same simulated data as the last activity but this time make a summary of the `min` statistic from of each simulation run instead of the `mean`.
+
+- You only need to redo the `summarize` step for this.
+- Plot the results again.
+- Comment on what you see this time. 
+  + Do the values concentrate as `n` increases? 
+  + Does the shape change? 
+  + If so, does it become more or less Normal as the sample size grows?
+
