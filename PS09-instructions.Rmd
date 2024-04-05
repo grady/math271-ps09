@@ -35,14 +35,22 @@ There are multiple ways to program this behavior, I focus on using some tidyvers
 - `purrr::map(x, func)` run the function using each input in x separately, each result is an item in the returned list
 - `bind_rows(list, .id="run")` combine the lists from the above functions in to a single data frame, adding a new variable, `run` in this example, for identifying which run the result came from
 
-```{r}tibble(x=rnorm(3))
+```{r, warning=FALSE}
+tibble(x=rnorm(3))
 rerun(2, tibble(x=rnorm(3)))
 rerun(10, tibble(x=rnorm(3))) %>% bind_rows(.id="run")
 ```
 
-```{r}
+The `moderndive::bowl` data set is a data set which we will, for the time, imagine as a virtual bowl of 2,400 small red or white balls. We can use the `dplyr::slice_sample` function to simulate drawing 10 random balls from the bowl without replacement. We can also summarize the draw with `dplyr::count`. Note that each time `slice_sample` is called, it generates a new random sample.
+
+```{r, warning=FALSE}
 data(bowl)
-rerun(2, bowl %>% slice_sample(n=10) %>% count(color)) %>% bind_rows
+bowl %>% slice_sample(n=10)
+bowl %>% slice_sample(n=10) %>% count(color)
+```
+We can use `rerun` with this pipeline to simulate drawing two separate samples.
+```{r, warning=FALSE}
+rerun(2, bowl %>% slice_sample(n=10) %>% count(color))
 ```
 
 
@@ -50,24 +58,31 @@ rerun(2, bowl %>% slice_sample(n=10) %>% count(color)) %>% bind_rows
 
 Map is a common _higher-order function_ in many programming languages. A diagram of the basic idea of `map` is shown below.
 
-```{r, echo=FALSE, fig.cap="Source: Wikimedia.org"}
+https://upload.wikimedia.org/wikipedia/commons/0/06/Mapping-steps-loillibe-new.gif
+
+```{r, echo=FALSE, fig.cap="Source: Wikimedia.org", eval=FALSE}
 include_graphics("https://upload.wikimedia.org/wikipedia/commons/0/06/Mapping-steps-loillibe-new.gif")
 ```
 
-For our use case we'll use a function that generates a data frame with simulated data sets instead of a simple arithmetic function.
+For our use case we'll use a function that generates a data frame with simulated data sets instead of a simple arithmetic operation. For each of the values $n=1$ through $3$, we will generate a tibble (tidyverse data frame) that contains $n$ random numbers.
 
 ```{r}
-map(2:3, function(n) tibble(n, x=rnorm(n)))
+1:3
+map(1:3, function(n) {tibble(n, x=rnorm(n))} )
+
+```
+
+```{r}
 map(2:5, function(n) tibble(n, x=rnorm(n))) %>% bind_rows(.id="run")
 ```
 
 In this case we use the map input values to control the sample size, but they could control other aspects of the simulation instead. Note that the function we are using is
 
 ```{r}
-function(n) tibble(n, x=rnorm(n))
+function(n) { tibble(n, x=rnorm(n)) }
 ```
 
-We _could_ save this function to a variable
+We _could_ save this function to a variable and use it by name in the map function
 
 ```{r, eval=FALSE}
 simfun <- function(n){
@@ -83,13 +98,13 @@ But for simple one-line functions like this one it's easy enough to just use it 
 
 Typically, we will want to treat each run completely separately for analysis and summary purposes, so lets make a custom function that will bind and group in one step. 
 
-```{r}
+```{r, warning=FALSE}
 bind_group <- function(data, .id="run"){
   data %>% bind_rows(.id=.id) %>% group_by(.data[[.id]], .add=TRUE)
 }
 
-(expsim <- rerun(100, tibble(x=rexp(5))) %>% bind_group())
-
+expsim <- rerun(100, tibble(x=rexp(5))) %>% bind_group()
+expsim
 ```
 
 Above each run generates 5 Exponential observations, the process is repeated 100 times, and put into a grouped tibble. Now we can use `summary` to compute summary statistics for each run of data generation.
@@ -106,26 +121,31 @@ ggplot(pivot_longer(expsim_summary, -run, names_to="statistic")) +
 
 ### Bead bowl sampling for proportions
 
+Now we will do something more interesting: we will simulate a large number of times (200) the action of taking a sample of size 15 from our bowl of red and white balls and counting the number of each color. Since the `bind_group` command we wrote has already grouped by run, we can use `mutate` to easily add in the proportion of red/white balls in each run, and then generate a histogram of the proportion of red balls across all 200 draws.
+
 ```{r}
-bowl_100 <- rerun(200, bowl %>% slice_sample(n=20) %>% count(color)) %>% bind_group
-bowl_100
-bowl_100 <- bowl_100 %>% mutate(prop=proportions(n))
-ggplot(bowl_100 %>% filter(color=="red")) + aes(prop) + geom_histogram(binwidth = 0.05, boundary=0.025)
+bowl_15 <- rerun(200, bowl %>% slice_sample(n=15) %>% count(color)) %>% bind_group 
+bowl_15
+bowl_15 <- bowl_15 %>% mutate(prop_red=proportions(n))
+ggplot(bowl_15 %>% filter(color=="red")) + aes(prop_red) + geom_histogram(binwidth = 1/15, boundary=0) + xlim(0,1)
 ```
 
-- for each different sample size $n$ do the following:
-  + create $k$ replicates of the following data set
-    + sample $nn$ balls from `bowl` and comptue the proportion red
+Now we take it to the next level, and use `map` to repeat the process for a number of different sizes of draw from the bowl.
 
-```{r}
-bowl_sim <- function(nn, k){
-  samples <- rerun(k, bowl %>% slice_sample(n=nn)) 
-  samples %>% bind_group(.id="sample") %>% count(color) %>% mutate(N=nn, prop=proportions(n))
+- for each different `sample_size` $n$ do the following:
+  + create $k$ replicates of the following simulated data set:
+    + draw a sample of `sample_size` balls from `bowl` and comptue the proportion red
+
+```{r, warning=FALSE, message=FALSE}
+bowl_sim <- function(sample_size, k){
+  samples <- rerun(k, bowl %>% slice_sample(n=sample_size)) 
+  samples %>% bind_group(.id="replicate") %>% count(color) %>% mutate(sample_size, prop_red=proportions(n))
 }
 bowl_sim(10,5)
 n <- c(5,10,20,50,100,200)
 different_n <- map(n, bowl_sim, k=500) %>% bind_group()
-ggplot(different_n %>% filter(color=="red")) + aes(x=prop) + geom_histogram() + facet_wrap(~N, scales="free")
+ggplot(different_n %>% filter(color=="red")) + aes(x=prop_red) + 
+  geom_histogram() + facet_wrap(~sample_size, labeller = label_both)
 ```
 
 
